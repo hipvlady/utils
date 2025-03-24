@@ -7,7 +7,7 @@ consistency after refactoring. It supports comparing BigQuery schemas and tables
 performing schema validation, row count checks, aggregate checks, and sample testing.
 
 Usage:
-    python schema_comparison_tool.py --config config.json --output results.log
+    python automated_testing.py --config config.json --output results.log
 """
 
 import os
@@ -256,13 +256,36 @@ class SchemaComparisonTool:
     def get_row_count(self, dataset: str, table: str, start_date: str, end_date: str) -> int:
         """Get row count from a table within a date range."""
         try:
-            query = f"""
-            SELECT COUNT(*) AS row_count
-            FROM `{self.project_id}.{dataset}.{table}`
-            WHERE date BETWEEN '{start_date}' AND '{end_date}'
-            """
+            # First check if 'date' column exists in the table
+            schema_df = self.get_table_schema(dataset, table)
+            date_column = None
+            
+            # Look for date-related columns
+            potential_date_columns = ['date', 'report_date', 'event_date', 'hit_date', 'page_date']
+            for col in potential_date_columns:
+                if col.lower() in [c.lower() for c in schema_df['column_name'].tolist()]:
+                    date_column = col
+                    break
+            
+            if date_column:
+                self.logger.info(f"  Using date column '{date_column}' for filtering {dataset}.{table}")
+                query = f"""
+                SELECT COUNT(*) AS row_count
+                FROM `{self.project_id}.{dataset}.{table}`
+                WHERE {date_column} BETWEEN '{start_date}' AND '{end_date}'
+                """
+            else:
+                # If no date column found, count all rows
+                self.logger.warning(f"  No date column found in {dataset}.{table}. Counting all rows (be patient, this could take longer).")
+                query = f"""
+                SELECT COUNT(*) AS row_count
+                FROM `{self.project_id}.{dataset}.{table}`
+                """
+            
             df = self.bq_client.query(query).to_dataframe()
-            return df["row_count"].iloc[0]
+            count = int(df["row_count"].iloc[0])
+            self.logger.info(f"  Found {count:,} rows in {dataset}.{table}")
+            return count
         except Exception as e:
             self.logger.error(f"Error getting row count for {dataset}.{table}: {e}")
             return 0
@@ -270,13 +293,40 @@ class SchemaComparisonTool:
     def get_aggregate(self, dataset: str, table: str, column: str, start_date: str, end_date: str) -> float:
         """Get aggregate value from a table within a date range."""
         try:
-            query = f"""
-            SELECT SUM({column}) AS total_value
-            FROM `{self.project_id}.{dataset}.{table}`
-            WHERE date BETWEEN '{start_date}' AND '{end_date}'
-            """
+            # First check if 'date' column exists in the table
+            schema_df = self.get_table_schema(dataset, table)
+            date_column = None
+            
+            # Look for date-related columns
+            potential_date_columns = ['date', 'report_date', 'event_date', 'hit_date', 'page_date']
+            for col in potential_date_columns:
+                if col.lower() in [c.lower() for c in schema_df['column_name'].tolist()]:
+                    date_column = col
+                    break
+            
+            if date_column:
+                query = f"""
+                SELECT SUM({column}) AS total_value
+                FROM `{self.project_id}.{dataset}.{table}`
+                WHERE {date_column} BETWEEN '{start_date}' AND '{end_date}'
+                """
+            else:
+                # If no date column found, aggregate all rows
+                self.logger.warning(f"No date column found in {dataset}.{table}. Aggregating all rows.")
+                query = f"""
+                SELECT SUM({column}) AS total_value
+                FROM `{self.project_id}.{dataset}.{table}`
+                """
+            
             df = self.bq_client.query(query).to_dataframe()
-            return df["total_value"].iloc[0] or 0
+            value = df["total_value"].iloc[0]
+            # Convert numpy types to Python native types for JSON serialization
+            if pd.isna(value):
+                return 0
+            elif hasattr(value, 'item'):
+                return value.item()  # Convert numpy types to native Python types
+            else:
+                return float(value)
         except Exception as e:
             self.logger.error(f"Error getting aggregate for {dataset}.{table}.{column}: {e}")
             return 0
@@ -316,14 +366,32 @@ class SchemaComparisonTool:
         # Get all column names
         columns = prod_schema['column_name'].tolist()
         
+        # Find date column if it exists
+        date_column = None
+        potential_date_columns = ['date', 'report_date', 'event_date', 'hit_date', 'page_date']
+        for col in potential_date_columns:
+            if col.lower() in [c.lower() for c in columns]:
+                date_column = col
+                break
+        
         # Prepare a query to get sample data
         columns_str = ", ".join(f"`{col}`" for col in columns)
-        sample_query = f"""
-        SELECT {columns_str}
-        FROM `{self.project_id}.{prod_dataset}.{table}`
-        WHERE date BETWEEN '{start_date}' AND '{end_date}'
-        LIMIT 1000
-        """
+        
+        if date_column:
+            sample_query = f"""
+            SELECT {columns_str}
+            FROM `{self.project_id}.{prod_dataset}.{table}`
+            WHERE {date_column} BETWEEN '{start_date}' AND '{end_date}'
+            LIMIT 1000
+            """
+        else:
+            # If no date column found, sample without date filter
+            self.logger.warning(f"No date column found in {prod_dataset}.{table}. Sampling without date filter.")
+            sample_query = f"""
+            SELECT {columns_str}
+            FROM `{self.project_id}.{prod_dataset}.{table}`
+            LIMIT 1000
+            """
         
         try:
             # Get sample data
@@ -344,18 +412,15 @@ class SchemaComparisonTool:
                 conditions = []
                 key_columns = []
                 
-                # Try to find good key columns
-                date_col = next((col for col in columns if col.lower() == 'date'), None)
-                
                 # Add date condition if date column exists
-                if date_col:
-                    conditions.append(f"`{date_col}` = '{row[date_col]}'")
-                    key_columns.append(date_col)
+                if date_column and date_column in row and not pd.isna(row[date_column]):
+                    conditions.append(f"`{date_column}` = '{row[date_column]}'")
+                    key_columns.append(date_column)
                 
                 # Add other good identifier columns
                 potential_key_cols = ['page_path', 'url', 'event_name', 'content_group', 'device_category', 'country']
                 for col in potential_key_cols:
-                    if col in columns and not pd.isna(row.get(col)):
+                    if col in columns and col in row and not pd.isna(row.get(col)):
                         if isinstance(row[col], str):
                             conditions.append(f"`{col}` = '{row[col].replace("'", "''")}'")
                         else:
@@ -366,6 +431,7 @@ class SchemaComparisonTool:
                 if len(conditions) < 3:
                     numeric_cols = [col for col in columns if 
                                    col not in key_columns and 
+                                   col in row and
                                    isinstance(row.get(col), (int, float)) and 
                                    not pd.isna(row.get(col))]
                     
@@ -392,6 +458,10 @@ class SchemaComparisonTool:
                 try:
                     result = self.bq_client.query(check_query).to_dataframe()
                     count = result["match_count"].iloc[0]
+                    
+                    # Convert numpy int64 to Python int for JSON serialization
+                    if hasattr(count, 'item'):
+                        count = count.item()
                     
                     results.append({
                         "matched": count > 0,
@@ -427,6 +497,7 @@ class SchemaComparisonTool:
         self.logger.info(f"\n--- Comparing Table: {prod_schema}.{table} vs {dev_schema}.{table} ---")
         
         # Schema comparison
+        self.logger.info(f"PHASE 1: Retrieving and comparing schema definitions...")
         prod_table_schema = self.get_table_schema(prod_schema, table)
         dev_table_schema = self.get_table_schema(dev_schema, table)
         
@@ -446,6 +517,8 @@ class SchemaComparisonTool:
                 "error": f"Could not retrieve schema for {dev_schema}.{table}"
             }
         
+        self.logger.info(f"Retrieved schemas for both tables. Production has {len(prod_table_schema)} columns, Development has {len(dev_table_schema)} columns.")
+        
         missing_in_dev, extra_in_dev, type_mismatches = self.compare_schemas(prod_table_schema, dev_table_schema)
         
         schema_results = {
@@ -454,7 +527,7 @@ class SchemaComparisonTool:
             "type_mismatches": type_mismatches
         }
         
-        self.logger.info("Schema Comparison Results:")
+        self.logger.info("PHASE 1 RESULTS - Schema Comparison Results:")
         self.logger.info(f"  Missing in dev: {missing_in_dev}" if missing_in_dev else "  No missing columns.")
         self.logger.info(f"  Extra in dev: {extra_in_dev}" if extra_in_dev else "  No extra columns.")
         if type_mismatches:
@@ -464,6 +537,7 @@ class SchemaComparisonTool:
             self.logger.info("  No data type mismatches.")
         
         # Get available metrics for this table
+        self.logger.info(f"PHASE 2: Identifying metrics to compare...")
         metrics = [m for m in self.config.get("metrics_to_compare", []) 
                   if self.check_column_exists(prod_schema, table, m) and 
                   self.check_column_exists(dev_schema, table, m)]
@@ -472,15 +546,20 @@ class SchemaComparisonTool:
             potential_metrics = self.get_available_metrics(prod_schema, table)
             metrics = potential_metrics[:5]  # Take up to 5 metrics
             self.logger.info(f"No specified metrics found. Using discovered metrics: {metrics}")
+        else:
+            self.logger.info(f"Found {len(metrics)} metrics to compare: {metrics}")
         
         # Row counts and metrics by time window
         window_results = []
         for start_date, end_date in time_windows:
+            self.logger.info(f"\nPHASE 3: Comparing data for time window {start_date} to {end_date}...")
+            
             try:
+                self.logger.info(f"  3.1: Counting rows in both environments...")
                 prod_count = self.get_row_count(prod_schema, table, start_date, end_date)
                 dev_count = self.get_row_count(dev_schema, table, start_date, end_date)
                 
-                self.logger.info(f"\nDate Range: {start_date} to {end_date}")
+                self.logger.info(f"  Date Range: {start_date} to {end_date}")
                 self.logger.info(f"  PROD row count: {prod_count}")
                 self.logger.info(f"  DEV row count: {dev_count}")
                 
@@ -499,8 +578,10 @@ class SchemaComparisonTool:
                 }
                 
                 # Compare metrics
-                for metric in metrics:
+                self.logger.info(f"  3.2: Comparing {len(metrics)} metrics between environments...")
+                for idx, metric in enumerate(metrics):
                     try:
+                        self.logger.info(f"  Comparing metric {idx+1}/{len(metrics)}: {metric}...")
                         prod_value = self.get_aggregate(prod_schema, table, metric, start_date, end_date)
                         dev_value = self.get_aggregate(dev_schema, table, metric, start_date, end_date)
                         
@@ -517,7 +598,7 @@ class SchemaComparisonTool:
                             "diff_pct": round(metric_diff_pct, 2)
                         })
                     except Exception as e:
-                        self.logger.error(f"Error comparing metric {metric}: {e}")
+                        self.logger.error(f"  Error comparing metric {metric}: {e}")
                 
                 window_results.append(window_result)
                 
@@ -528,6 +609,9 @@ class SchemaComparisonTool:
         sample_check_result = None
         if time_windows:
             recent_window = time_windows[0]  # Use the first time window
+            self.logger.info(f"\nPHASE 4: Performing random sample checks...")
+            self.logger.info(f"  Taking {self.config.get('sample_size', 5)} random samples from production and checking if they exist in development...")
+            
             sample_check_result = self.random_sample_check(
                 prod_dataset=prod_schema,
                 dev_dataset=dev_schema,
@@ -540,8 +624,14 @@ class SchemaComparisonTool:
             if "error" in sample_check_result:
                 self.logger.error(f"Sample check error: {sample_check_result['error']}")
             else:
-                self.logger.info("\nRandom Sample Check Results:")
+                self.logger.info("\nPHASE 4 RESULTS - Random Sample Check Results:")
                 self.logger.info(f"  Match rate: {sample_check_result['match_rate'] * 100:.1f}% ({sample_check_result['matches']} of {sample_check_result['sample_size']} rows matched)")
+                if sample_check_result['match_rate'] < 1.0:
+                    self.logger.warning("  ⚠️ Some sample rows from production were not found in development")
+                else:
+                    self.logger.info("  ✓ All sample rows from production were found in development")
+        
+        self.logger.info(f"\nTesting completed for {prod_schema}.{table} vs {dev_schema}.{table}\n")
         
         return {
             "prod_table": f"{prod_schema}.{table}",
@@ -553,18 +643,29 @@ class SchemaComparisonTool:
     
     def run_comparison(self) -> Dict:
         """Run comparisons for all configured schema pairs and tables."""
+        self.logger.info("\n\n=============================================")
+        self.logger.info("STARTING SCHEMA AND TABLE COMPARISON PROCESS")
+        self.logger.info("=============================================\n")
+        
         results = []
         time_windows = self.get_time_windows()
         
-        for schema_pair in self.config["schema_comparisons"]:
+        self.logger.info(f"Testing will use the following time windows:")
+        for idx, (start_date, end_date) in enumerate(time_windows):
+            self.logger.info(f"  Window {idx+1}: {start_date} to {end_date}")
+        
+        total_schema_pairs = len(self.config["schema_comparisons"])
+        for schema_idx, schema_pair in enumerate(self.config["schema_comparisons"]):
             prod_schema = schema_pair["prod_schema"]
             dev_schema = schema_pair["dev_schema"]
             tables = schema_pair["tables"]
             
-            self.logger.info(f"\n\n=== Comparing Schemas: {prod_schema} vs {dev_schema} ===\n")
+            self.logger.info(f"\n\n=== Comparing Schema Pair {schema_idx+1}/{total_schema_pairs}: {prod_schema} vs {dev_schema} ===\n")
             
-            for table in tables:
+            total_tables = len(tables)
+            for table_idx, table in enumerate(tables):
                 try:
+                    self.logger.info(f"Starting table comparison {table_idx+1}/{total_tables}: {table}")
                     table_result = self.compare_table(prod_schema, dev_schema, table, time_windows)
                     results.append(table_result)
                 except Exception as e:
@@ -574,6 +675,12 @@ class SchemaComparisonTool:
                         "dev_table": f"{dev_schema}.{table}",
                         "error": str(e)
                     })
+        
+        self.logger.info("\n\n=============================================")
+        self.logger.info("COMPARISON PROCESS COMPLETED")
+        self.logger.info(f"Total schema pairs tested: {total_schema_pairs}")
+        self.logger.info(f"Total tables tested: {len(results)}")
+        self.logger.info("=============================================\n")
         
         return {
             "comparison_time": datetime.now().isoformat(),
@@ -585,11 +692,60 @@ class SchemaComparisonTool:
     def save_results(self, results: Dict, output_file: str) -> None:
         """Save comparison results to a JSON file."""
         try:
+            # Convert any NumPy or pandas types to native Python types for JSON serialization
+            def json_serialize(obj):
+                if isinstance(obj, dict):
+                    return {k: json_serialize(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [json_serialize(i) for i in obj]
+                elif hasattr(obj, 'item'):  # numpy types
+                    return obj.item()
+                elif pd.isna(obj):
+                    return None
+                else:
+                    return obj
+            
+            self.logger.info("\nSaving comparison results to JSON file...")
+            serializable_results = json_serialize(results)
+            
             with open(output_file, 'w') as f:
-                json.dump(results, f, indent=2)
-            self.logger.info(f"Comparison results saved to {output_file}")
+                json.dump(serializable_results, f, indent=2)
+            self.logger.info(f"Comparison results successfully saved to {output_file}")
+            
+            # Calculate and log some summary statistics
+            tables_count = len(results.get("results", []))
+            
+            # Count schemas with issues
+            schemas_with_column_mismatches = set()
+            schemas_with_type_mismatches = set()
+            schemas_with_low_match_rate = set()
+            
+            for table_result in results.get("results", []):
+                prod_table = table_result.get("prod_table", "")
+                schema = prod_table.split(".")[0] if "." in prod_table else ""
+                
+                # Check for schema issues
+                schema_comparison = table_result.get("schema_comparison", {})
+                if schema_comparison.get("missing_in_dev") or schema_comparison.get("extra_in_dev"):
+                    schemas_with_column_mismatches.add(schema)
+                if schema_comparison.get("type_mismatches"):
+                    schemas_with_type_mismatches.add(schema)
+                
+                # Check for data issues
+                sample_check = table_result.get("sample_check", {})
+                match_rate = sample_check.get("match_rate", 1.0)
+                if match_rate < 0.9:  # Less than 90% match
+                    schemas_with_low_match_rate.add(schema)
+            
+            self.logger.info("\nSUMMARY STATISTICS:")
+            self.logger.info(f"- Total tables compared: {tables_count}")
+            self.logger.info(f"- Schemas with column mismatches: {len(schemas_with_column_mismatches)}")
+            self.logger.info(f"- Schemas with data type mismatches: {len(schemas_with_type_mismatches)}")
+            self.logger.info(f"- Schemas with low sample match rates: {len(schemas_with_low_match_rate)}")
+            
         except Exception as e:
             self.logger.error(f"Error saving results: {e}")
+            self.logger.error("The comparison was completed, but results could not be saved to file.")
     
     def close_connection(self) -> None:
         """Close BigQuery client."""
@@ -623,6 +779,8 @@ def parse_args():
 
 def main():
     """Main entry point."""
+    start_time = datetime.now()
+    
     # Parse command line arguments
     args = parse_args()
     
@@ -634,6 +792,103 @@ def main():
         time_window_type=args.time_window,
         days_back=args.days_back
     )
+    
+    try:
+        comparison_tool.logger.info("======================================================")
+        comparison_tool.logger.info("PROD VS DEV SCHEMA COMPARISON TOOL")
+        comparison_tool.logger.info("======================================================")
+        comparison_tool.logger.info(f"Start time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        comparison_tool.logger.info(f"Comparing schemas using {args.time_window} time window")
+        comparison_tool.logger.info(f"Output file: {args.output}")
+        comparison_tool.logger.info(f"Log file: {args.log if args.log else 'console only'}")
+        comparison_tool.logger.info("======================================================\n")
+        
+        # Run comparison
+        results = comparison_tool.run_comparison()
+        
+        # Save results
+        comparison_tool.save_results(results, args.output)
+        
+        # Close connection
+        comparison_tool.close_connection()
+        
+        # Calculate and display execution time
+        end_time = datetime.now()
+        execution_time = end_time - start_time
+        comparison_tool.logger.info("\n======================================================")
+        comparison_tool.logger.info(f"COMPARISON COMPLETED SUCCESSFULLY")
+        comparison_tool.logger.info(f"Start time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        comparison_tool.logger.info(f"End time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        comparison_tool.logger.info(f"Total execution time: {execution_time}")
+        comparison_tool.logger.info("======================================================")
+        
+        # Exit with success
+        sys.exit(0)
+    except Exception as e:
+        comparison_tool.logger.critical(f"CRITICAL ERROR: {e}")
+        comparison_tool.logger.critical("The comparison process was terminated due to an error.")
+        comparison_tool.close_connection()
+        
+        # Calculate and display execution time even on failure
+        end_time = datetime.now()
+        execution_time = end_time - start_time
+        comparison_tool.logger.critical(f"Execution time before failure: {execution_time}")
+        
+        sys.exit(1)
+        config_path=args.config,
+        log_file=args.log,
+        log_level=args.log_level,
+        time_window_type=args.time_window,
+        days_back=args.days_back
+    )
+    
+    try:
+        comparison_tool.logger.info("======================================================")
+        comparison_tool.logger.info("PROD VS DEV SCHEMA COMPARISON TOOL")
+        comparison_tool.logger.info("======================================================")
+        comparison_tool.logger.info(f"Start time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        comparison_tool.logger.info(f"Comparing schemas using {args.time_window} time window")
+        comparison_tool.logger.info(f"Output file: {args.output}")
+        comparison_tool.logger.info(f"Log file: {args.log if args.log else 'console only'}")
+        comparison_tool.logger.info("======================================================\n")
+        
+        # Run comparison
+        results = comparison_tool.run_comparison()
+        
+        # Save results
+        comparison_tool.save_results(results, args.output)
+        
+        # Close connection
+        comparison_tool.close_connection()
+        
+        # Calculate and display execution time
+        end_time = datetime.now()
+        execution_time = end_time - start_time
+        comparison_tool.logger.info("\n======================================================")
+        comparison_tool.logger.info(f"COMPARISON COMPLETED SUCCESSFULLY")
+        comparison_tool.logger.info(f"Start time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        comparison_tool.logger.info(f"End time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        comparison_tool.logger.info(f"Total execution time: {execution_time}")
+        comparison_tool.logger.info("======================================================")
+        
+        # Exit with success
+        sys.exit(0)
+    except Exception as e:
+        comparison_tool.logger.critical(f"CRITICAL ERROR: {e}")
+        comparison_tool.logger.critical("The comparison process was terminated due to an error.")
+        comparison_tool.close_connection()
+        
+        # Calculate and display execution time even on failure
+        end_time = datetime.now()
+        execution_time = end_time - start_time
+        comparison_tool.logger.critical(f"Execution time before failure: {execution_time}")
+        
+        sys.exit(1)
+        config_path=args.config,
+        log_file=args.log,
+        log_level=args.log_level,
+        time_window_type=args.time_window,
+        days_back=args.days_back
     
     try:
         # Run comparison
