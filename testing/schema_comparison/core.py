@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple, Any, Optional, Union, Set
 from datetime import datetime, timedelta
 
 # Internal imports
-from .. import utils
+from . import utils
 from . import query_builder
 from . import analysis
 
