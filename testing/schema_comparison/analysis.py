@@ -137,10 +137,10 @@ def build_row_conditions(row: pd.Series, columns: List[str],
     # If we don't have enough conditions, add some numeric columns
     if len(conditions) < 3:
         numeric_cols = [col for col in columns if 
-                       col not in key_columns and 
-                       col in row and
-                       isinstance(row.get(col), (int, float)) and 
-                       not pd.isna(row.get(col))]
+                        col not in key_columns and 
+                        col in row and
+                        isinstance(row.get(col), (int, float)) and 
+                        not pd.isna(row.get(col))]
         
         for col in numeric_cols[:2]:  # Add up to 2 numeric columns
             conditions.append(f"`{col}` = {row[col]}")
