@@ -1,5 +1,7 @@
 .DS_Store
 venv/
 .venv/
+testing/set_env.sh
 schema_comparison_results.json
 *.log
+set_env.sh
