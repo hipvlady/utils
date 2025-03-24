@@ -19,6 +19,7 @@ from datetime import datetime
 
 # Import the SchemaComparisonTool from our module
 from schema_comparison import SchemaComparisonTool
+from schema_comparison.utils import create_timestamped_output_directory
 
 
 def parse_args():
@@ -42,6 +43,8 @@ def parse_args():
                         help='Specific date to test in format YYYY-MM-DD (used with --time-window=specific_day)')
     parser.add_argument('--samples', type=int, default=None,
                         help='Number of samples to use for random sample checks (overrides config file)')
+    parser.add_argument('--results-dir', type=str, default='results',
+                        help='Base directory to store results')
     return parser.parse_args()
 
 
@@ -52,10 +55,17 @@ def main():
     # Parse command line arguments
     args = parse_args()
     
+    # Create timestamped output directory
+    output_dir = create_timestamped_output_directory(args.results_dir)
+    
+    # Update output and log file paths to use the output directory
+    output_file = os.path.join(output_dir, args.output)
+    log_file = os.path.join(output_dir, args.log)
+    
     # Create SchemaComparisonTool instance
     comparison_tool = SchemaComparisonTool(
         config_path=args.config,
-        log_file=args.log,
+        log_file=log_file,
         log_level=args.log_level,
         time_window_type=args.time_window,
         days_back=args.days_back,
@@ -68,6 +78,7 @@ def main():
         comparison_tool.logger.info("PROD VS DEV SCHEMA COMPARISON TOOL")
         comparison_tool.logger.info("======================================================")
         comparison_tool.logger.info(f"Start time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        comparison_tool.logger.info(f"Results will be stored in: {output_dir}")
         
         # Log time window settings
         if args.time_window == "fixed":
@@ -84,15 +95,21 @@ def main():
             sample_size = comparison_tool.config.get("sample_size", 5)
             comparison_tool.logger.info(f"Using default sample size: {sample_size}")
         
-        comparison_tool.logger.info(f"Output file: {args.output}")
-        comparison_tool.logger.info(f"Log file: {args.log if args.log else 'console only'}")
+        comparison_tool.logger.info(f"Output file: {output_file}")
+        comparison_tool.logger.info(f"Log file: {log_file}")
         comparison_tool.logger.info("======================================================\n")
+        
+        # Save the configuration to the output directory for reference
+        config_output_path = os.path.join(output_dir, "config_used.json")
+        with open(config_output_path, 'w') as f:
+            json.dump(comparison_tool.config, f, indent=2)
+        comparison_tool.logger.info(f"Saved configuration to {config_output_path}")
         
         # Run comparison
         results = comparison_tool.run_comparison()
         
         # Save results
-        comparison_tool.save_results(results, args.output)
+        comparison_tool.save_results(results, output_file)
         
         # Close connection
         comparison_tool.close_connection()
@@ -105,6 +122,7 @@ def main():
         comparison_tool.logger.info(f"Start time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         comparison_tool.logger.info(f"End time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
         comparison_tool.logger.info(f"Total execution time: {execution_time}")
+        comparison_tool.logger.info(f"Results stored in: {output_dir}")
         comparison_tool.logger.info("======================================================")
         
         # Exit with success

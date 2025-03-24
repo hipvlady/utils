@@ -29,3 +29,7 @@ python automated_testing.py --config config.json --output custom_results.json
 # Run a quick test for yesterday with small sample size
 echo "Running a quick test for yesterday only..."
 python automated_testing.py --time-window specific_day --samples 3 --output yesterday_quick_results.json
+
+# Run analysis on a specific date with custom results directory
+echo "Running analysis for 2024-03-21 with 20 samples..."
+python automated_testing.py --time-window specific_day --specific-date 2024-03-21 --samples 20 --output march21_analysis.json --results-dir custom_results

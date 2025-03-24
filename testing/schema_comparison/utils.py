@@ -4,6 +4,7 @@ Utility functions and classes for schema comparison.
 
 import sys
 import json
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -107,3 +108,25 @@ def get_formatted_date_range(time_window_type: str, days_back: int = 30,
     
     # Default: return empty list (will be filled from config in the tool)
     return []
+
+
+def create_timestamped_output_directory(base_dir="results"):
+    """
+    Create a timestamped directory for output files.
+    
+    Args:
+        base_dir: Base directory for results
+        
+    Returns:
+        Path to the created directory
+    """
+    # Ensure base directory exists
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+    
+    # Create timestamped directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(base_dir, f"results_{timestamp}")
+    os.makedirs(output_dir)
+    
+    return output_dir
