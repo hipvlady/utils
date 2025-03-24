@@ -27,6 +27,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # BigQuery
 from google.cloud import bigquery
+from google.oauth2 import service_account
 
 # Create a class to duplicate output
 class Tee:
@@ -159,7 +160,33 @@ class SchemaComparisonTool:
         """Initialize BigQuery client."""
         try:
             self.project_id = self.config["project_id"]
-            self.bq_client = bigquery.Client(project=self.project_id)
+            
+            # Get the service account path from configuration or environment variable
+            service_account_path = self.config.get("service_account_path")
+            
+            # If service account path is specified as an environment variable reference
+            if service_account_path and service_account_path.startswith("${") and service_account_path.endswith("}"):
+                env_var = service_account_path[2:-1]
+                service_account_path = os.environ.get(env_var)
+                if not service_account_path:
+                    self.logger.warning(f"Environment variable {env_var} not found. Falling back to application default credentials.")
+            
+            # Initialize BigQuery client with or without service account
+            if service_account_path and os.path.exists(service_account_path):
+                self.logger.info(f"Using service account credentials from: {service_account_path}")
+                credentials = service_account.Credentials.from_service_account_file(
+                    service_account_path,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+                self.bq_client = bigquery.Client(
+                    project=self.project_id,
+                    credentials=credentials
+                )
+            else:
+                # Use application default credentials
+                self.logger.info("Using application default credentials")
+                self.bq_client = bigquery.Client(project=self.project_id)
+            
             self.timeout_seconds = 300
             self.logger.info(f"Connected to BigQuery project: {self.project_id}")
         except Exception as e:

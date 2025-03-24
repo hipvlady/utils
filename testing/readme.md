@@ -43,8 +43,12 @@ schema-comparison-tool/
    ```
 
 3. Set up BigQuery authentication:
-   - Set up application default credentials or use a service account
-   - Make sure you have access to both production and development schemas
+   - You can use service account authentication by specifying the path in the config
+   - Set the environment variable with your service account key path:
+     ```
+     export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+     ```
+   - Make sure the service account has access to both production and development schemas
 
 ## Configuration
 
@@ -53,6 +57,7 @@ Create a `config.json` file with the following structure:
 ```json
 {
   "project_id": "your-gcp-project-id",
+  "service_account_path": "${GOOGLE_APPLICATION_CREDENTIALS}",
   "schema_comparisons": [
     {
       "prod_schema": "production_schema_name",

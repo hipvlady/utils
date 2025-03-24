@@ -1,5 +1,6 @@
 {
     "project_id": "okta-ga-rollup",
+    "service_account_path": "${GOOGLE_APPLICATION_CREDENTIALS}",
     "schema_comparisons": [
       {
         "prod_schema": "dbt_prod_ga4_reporting",
