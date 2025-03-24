@@ -15,18 +15,31 @@ The primary purpose of this tool is to compare and test production schemas versu
 - **Flexible Time Window Options**:
   - Fixed date ranges specified in configuration
   - Floating window based on current date (e.g., last 30 days)
+  - Specific day testing for targeted verification
 - **Comprehensive Logging**: Detailed logging to file and console
 - **Config-Driven**: Easily configure schemas and tables to test
 - **CLI Support**: Command-line interface for easy integration
+- **Organized Results**: All test runs saved in timestamped directories
 
 ## Project Structure
 
 ```
 schema-comparison-tool/
-├── schema_comparison_tool.py  # Main script
-├── config.json                # Configuration file
-├── requirements.txt           # Dependencies
-└── README.md                  # This file
+├── automated_testing.py      # Main script
+├── config.json               # Configuration file
+├── requirements.txt          # Dependencies
+├── README.md                 # This file
+├── schema_comparison/        # Core package
+│   ├── __init__.py           # Package initialization
+│   ├── analysis.py           # Analysis functions
+│   ├── core.py               # Main comparison functionality
+│   ├── query_builder.py      # SQL query generators
+│   └── utils.py              # Utility functions
+└── results/                  # Test results directory
+    └── results_YYYYMMDD_HHMMSS/  # Timestamped results for each run
+        ├── schema_comparison_results.json  # JSON results
+        ├── schema_comparison.log           # Detailed log
+        └── config_used.json                # Configuration snapshot
 ```
 
 ## Installation
@@ -97,36 +110,54 @@ Create a `config.json` file with the following structure:
 ### Basic Usage
 
 ```bash
-python schema_comparison_tool.py
+python automated_testing.py
 ```
 
 ### Specify Config File
 
 ```bash
-python schema_comparison_tool.py --config custom_config.json
+python automated_testing.py --config custom_config.json
 ```
 
 ### Use Floating Time Window (Last 30 Days)
 
 ```bash
-python schema_comparison_tool.py --time-window floating --days-back 30
+python automated_testing.py --time-window floating --days-back 30
 ```
 
-### Set Custom Output and Log Files
+### Test a Specific Date
 
 ```bash
-python schema_comparison_tool.py --output results.json --log comparison_run.log
+python automated_testing.py --time-window specific_day --specific-date 2024-03-21
+```
+
+### Use More Samples for Verification
+
+```bash
+python automated_testing.py --samples 20
+```
+
+### Specify Custom Results Directory
+
+```bash
+python automated_testing.py --results-dir custom_results
+```
+
+### Combine Options for Targeted Testing
+
+```bash
+python automated_testing.py --time-window specific_day --specific-date 2024-03-21 --samples 20 --results-dir my_test_results
 ```
 
 ### Set Log Level
 
 ```bash
-python schema_comparison_tool.py --log-level DEBUG
+python automated_testing.py --log-level DEBUG
 ```
 
 ## Time Window Options
 
-The tool supports two approaches for time window selection:
+The tool supports three approaches for time window selection:
 
 1. **Fixed Time Windows**: Specific date ranges defined in the configuration file
    ```json
@@ -138,16 +169,42 @@ The tool supports two approaches for time window selection:
 
 2. **Floating Time Window**: A dynamic window based on the current date
    ```bash
-   python schema_comparison_tool.py --time-window floating --days-back 30
+   python automated_testing.py --time-window floating --days-back 30
    ```
    This will use a window from today minus 30 days to today.
+
+3. **Specific Day**: Test a single specific date
+   ```bash
+   python automated_testing.py --time-window specific_day --specific-date 2024-03-21
+   ```
+   This will test only data from March 21, 2024.
+
+## Results Management
+
+Test results are organized in timestamped directories to prevent overwriting previous runs:
+
+```
+results/
+└── results_20240324_154522/
+    ├── schema_comparison_results.json  # Detailed JSON results
+    ├── schema_comparison.log           # Complete log file
+    └── config_used.json                # Configuration snapshot
+```
+
+This makes it easy to:
+- Track test runs over time
+- Compare results across different runs
+- Preserve historical test data
+- Maintain an audit trail of schema comparisons
 
 ## Full Command Line Options
 
 ```
-usage: schema_comparison_tool.py [-h] [--config CONFIG] [--output OUTPUT] [--log LOG]
+usage: automated_testing.py [-h] [--config CONFIG] [--output OUTPUT] [--log LOG]
                         [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
-                        [--time-window {fixed,floating}] [--days-back DAYS_BACK]
+                        [--time-window {fixed,floating,specific_day}] [--days-back DAYS_BACK]
+                        [--specific-date SPECIFIC_DATE] [--samples SAMPLES]
+                        [--results-dir RESULTS_DIR]
 
 Schema and Table Comparison Tool
 
@@ -158,18 +215,24 @@ optional arguments:
   --log LOG             Log file path
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Logging level
-  --time-window {fixed,floating}
-                        Time window type (fixed or floating)
+  --time-window {fixed,floating,specific_day}
+                        Time window type (fixed, floating, or specific_day)
   --days-back DAYS_BACK
                         Number of days to look back for floating time window
+  --specific-date SPECIFIC_DATE
+                        Specific date to test in format YYYY-MM-DD
+  --samples SAMPLES     Number of samples to use for random sample checks
+  --results-dir RESULTS_DIR
+                        Base directory to store results
 ```
 
 ## Output
 
-The tool generates two types of output:
+The tool generates three types of output:
 
 1. **Log File**: Detailed log of all comparisons performed
 2. **Results JSON**: Structured results of all comparisons that can be parsed for monitoring
+3. **Config Snapshot**: Copy of the configuration used for the test run
 
 Example results JSON:
 
@@ -228,6 +291,10 @@ Example results JSON:
 2. **Daily Data Validation**: Run with floating time window to validate recent data consistency
    
 3. **QA Testing**: Conduct thorough testing before promoting development schema to production
+
+4. **Targeted Date Testing**: Test a specific date when issues are reported in production
+
+5. **Historical Audit**: Compare multiple date ranges to verify consistency over time
 
 ## Requirements
 
