@@ -129,7 +129,11 @@ def build_row_conditions(row: pd.Series, columns: List[str],
     for col in potential_key_cols:
         if col in columns and col in row and not pd.isna(row.get(col)):
             if isinstance(row[col], str):
-                conditions.append(f"`{col}` = '{row[col].replace(\"'\", \"''\")}\'")
+                # Option 1: Split the f-string to avoid complex escaping
+                conditions.append(f"`{col}` = '" + row[col].replace("'", "''") + "'")
+                # Alternative options:
+                # conditions.append("`{}` = '{}'".format(col, row[col].replace("'", "''")))
+                # conditions.append("`" + col + "` = '" + row[col].replace("'", "''") + "'")
             else:
                 conditions.append(f"`{col}` = {row[col]}")
             key_columns.append(col)
