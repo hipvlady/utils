@@ -889,6 +889,7 @@ def main():
         log_level=args.log_level,
         time_window_type=args.time_window,
         days_back=args.days_back
+    )
     
     try:
         # Run comparison
