@@ -1,0 +1,48 @@
+{
+    "project_id": "okta-ga-rollup",
+    "service_account_path": "${GOOGLE_APPLICATION_CREDENTIALS}",
+    "schema_comparisons": [
+      {
+        "prod_schema": "dbt_prod_ga4_reporting",
+        "dev_schema": "dev_admind_joe_ga4_reporting",
+        "tables": [
+          "ga4__sessions",
+          "ga4__pageviews",
+          "ga4__clicks",
+          "ga4__content_okta",
+          "ga4__traffic_okta",
+          "ga4__flattened_hits",
+          "ga4__traffic_with_ua_union",
+          "ga4__content_with_ua_union"
+        ]
+      },
+      {
+        "prod_schema": "dbt_prod_reporting",
+        "dev_schema": "dev_admind_joe_reporting",
+        "tables": [
+          "search_console_url",
+          "search_console_site",
+          "page_report_combined"
+        ]
+      }
+    ],
+    "fixed_time_windows": [
+      ["2024-02-01", "2024-02-28"],
+      ["2024-03-01", "2024-03-15"]
+    ],
+    "metrics_to_compare": [
+      "sessions",
+      "pageviews",
+      "unique_pageviews",
+      "clicks",
+      "users",
+      "new_users",
+      "bounce_rate",
+      "high_value_visits",
+      "engaged_sessions",
+      "session_engaged",
+      "session_conversion_rate",
+      "any_conversion_session_conversions_unique"
+    ],
+    "sample_size": 10
+  }
