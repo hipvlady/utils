@@ -3,7 +3,8 @@ Analysis functions for schema comparison.
 """
 
 import pandas as pd
-from typing import Dict, List, Tuple, Set, Optional, Any
+import numpy as np
+from typing import Dict, List, Tuple, Set, Optional, Any, Union
 
 
 def find_date_column(schema_df: pd.DataFrame, table_name: str) -> Optional[str]:
@@ -91,7 +92,7 @@ def get_available_metrics(schema_df: pd.DataFrame) -> List[str]:
         return []
         
     # Filter for numeric types
-    numeric_types = ['int64', 'float64', 'numeric', 'integer', 'float', 'number']
+    numeric_types = ['int64', 'float64', 'numeric', 'integer', 'float', 'number', 'bignumeric', 'decimal']
     numeric_columns = schema_df[schema_df['data_type'].str.lower().isin(numeric_types)]['column_name'].tolist()
     
     # Filter out ID columns and other non-metric columns
@@ -101,6 +102,129 @@ def get_available_metrics(schema_df: pd.DataFrame) -> List[str]:
     # Add back specific count metrics that are actually valuable
     count_metrics = [col for col in numeric_columns if 'count' in col.lower()]
     return metrics + count_metrics
+
+
+def get_available_dimensions(schema_df: pd.DataFrame) -> List[str]:
+    """
+    Get list of categorical columns that can be used as dimensions.
+    
+    Args:
+        schema_df: DataFrame containing schema information
+        
+    Returns:
+        List of column names that can be used as dimensions
+    """
+    if schema_df.empty:
+        return []
+        
+    # Filter for string/categorical types
+    string_types = ['string', 'varchar', 'char', 'text', 'bytes']
+    categorical_columns = schema_df[schema_df['data_type'].str.lower().isin(string_types)]['column_name'].tolist()
+    
+    # Filter out columns that are likely not dimensions
+    excluded_terms = ['url', 'path', 'description', 'comment', 'note', 'content']
+    dimensions = [col for col in categorical_columns if not any(term in col.lower() for term in excluded_terms)]
+    
+    # Add back specific dimension-like columns even if filtered
+    dimension_terms = ['channel', 'medium', 'source', 'category', 'platform', 'device', 'country', 'region']
+    additional_dims = [col for col in categorical_columns if any(term in col.lower() for term in dimension_terms)]
+    
+    # Combine and deduplicate
+    result = list(set(dimensions + additional_dims))
+    
+    return result
+
+
+def is_numeric_column(schema_df: pd.DataFrame, column_name: str) -> bool:
+    """
+    Determine if a column is numeric based on schema information.
+    
+    Args:
+        schema_df: DataFrame containing schema information
+        column_name: Name of column to check
+        
+    Returns:
+        Boolean indicating if column is numeric
+    """
+    if schema_df.empty:
+        return False
+        
+    numeric_types = ['int64', 'float64', 'numeric', 'integer', 'float', 'number', 'bignumeric', 'decimal']
+    
+    # Get column data type, accounting for case sensitivity
+    column_lower = column_name.lower()
+    matching_cols = schema_df[schema_df['column_name'].str.lower() == column_lower]
+    
+    if matching_cols.empty:
+        return False
+    
+    data_type = matching_cols.iloc[0]['data_type'].lower()
+    return data_type in numeric_types
+
+
+def determine_column_type(schema_df: pd.DataFrame, column_name: str) -> str:
+    """
+    Determine the type of a column (numeric, categorical, date, boolean).
+    
+    Args:
+        schema_df: DataFrame containing schema information
+        column_name: Name of column to check
+        
+    Returns:
+        String representing column type ('numeric', 'categorical', 'date', 'boolean', 'unknown')
+    """
+    if schema_df.empty:
+        return 'unknown'
+    
+    # Get column data type, accounting for case sensitivity
+    column_lower = column_name.lower()
+    matching_cols = schema_df[schema_df['column_name'].str.lower() == column_lower]
+    
+    if matching_cols.empty:
+        return 'unknown'
+    
+    data_type = matching_cols.iloc[0]['data_type'].lower()
+    
+    # Numeric types
+    if data_type in ['int64', 'float64', 'numeric', 'integer', 'float', 'number', 'bignumeric', 'decimal']:
+        return 'numeric'
+    
+    # Date types
+    elif data_type in ['date', 'datetime', 'timestamp', 'time']:
+        return 'date'
+    
+    # Boolean types
+    elif data_type in ['bool', 'boolean']:
+        return 'boolean'
+    
+    # String/categorical types
+    elif data_type in ['string', 'varchar', 'char', 'text', 'bytes']:
+        return 'categorical'
+    
+    # Default
+    return 'unknown'
+
+
+def get_appropriate_aggregation(column_type: str) -> Tuple[str, str]:
+    """
+    Get appropriate aggregation function and description for a column type.
+    
+    Args:
+        column_type: Type of column ('numeric', 'categorical', etc.)
+        
+    Returns:
+        Tuple of (aggregation_function, description)
+    """
+    if column_type == 'numeric':
+        return 'SUM', 'sum'
+    elif column_type == 'categorical':
+        return 'COUNT(DISTINCT)', 'distinct count'
+    elif column_type == 'boolean':
+        return 'SUM', 'count of true values'
+    elif column_type == 'date':
+        return 'COUNT(DISTINCT)', 'distinct count'
+    else:
+        return 'COUNT(DISTINCT)', 'distinct count'
 
 
 def build_row_conditions(row: pd.Series, columns: List[str], 
@@ -153,6 +277,62 @@ def build_row_conditions(row: pd.Series, columns: List[str],
     return conditions, key_columns
 
 
+def compare_distributions(prod_dist: pd.DataFrame, dev_dist: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Compare categorical distributions between production and development.
+    
+    Args:
+        prod_dist: DataFrame with production distribution (columns: value, count, percentage)
+        dev_dist: DataFrame with development distribution (columns: value, count, percentage)
+        
+    Returns:
+        Dictionary with comparison results
+    """
+    if prod_dist.empty or dev_dist.empty:
+        return {
+            "overlap_rate": 0,
+            "common_values": [],
+            "missing_in_dev": [],
+            "missing_in_prod": []
+        }
+    
+    # Get sets of values
+    prod_values = set(prod_dist['value'])
+    dev_values = set(dev_dist['value'])
+    
+    # Find common and missing values
+    common_values = prod_values.intersection(dev_values)
+    missing_in_dev = prod_values - dev_values
+    missing_in_prod = dev_values - prod_values
+    
+    # Calculate overlap rate
+    overlap_rate = len(common_values) / len(prod_values) if prod_values else 0
+    
+    # Compare percentages for common values
+    percentage_diffs = []
+    for value in common_values:
+        prod_pct = prod_dist[prod_dist['value'] == value]['percentage'].iloc[0] if not prod_dist[prod_dist['value'] == value].empty else 0
+        dev_pct = dev_dist[dev_dist['value'] == value]['percentage'].iloc[0] if not dev_dist[dev_dist['value'] == value].empty else 0
+        
+        percentage_diffs.append({
+            "value": value,
+            "prod_pct": prod_pct,
+            "dev_pct": dev_pct,
+            "diff": abs(prod_pct - dev_pct)
+        })
+    
+    # Sort by largest differences
+    percentage_diffs = sorted(percentage_diffs, key=lambda x: x['diff'], reverse=True)
+    
+    return {
+        "overlap_rate": overlap_rate,
+        "common_values": list(common_values),
+        "missing_in_dev": list(missing_in_dev),
+        "missing_in_prod": list(missing_in_prod),
+        "percentage_diffs": percentage_diffs[:5]  # Top 5 differences
+    }
+
+
 def analyze_comparison_results(results: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generate summary statistics from comparison results.
@@ -170,6 +350,7 @@ def analyze_comparison_results(results: Dict[str, Any]) -> Dict[str, Any]:
     schemas_with_type_mismatches = set()
     schemas_with_low_match_rate = set()
     schemas_with_row_count_diff = set()
+    schemas_with_dimension_issues = set()
     
     for table_result in results.get("results", []):
         prod_table = table_result.get("prod_table", "")
@@ -193,11 +374,18 @@ def analyze_comparison_results(results: Dict[str, Any]) -> Dict[str, Any]:
         match_rate = sample_check.get("match_rate", 1.0)
         if match_rate < 0.9:  # Less than 90% match
             schemas_with_low_match_rate.add(schema)
+            
+        # Check for dimension distribution issues
+        for dimension in table_result.get("dimension_comparisons", []):
+            if dimension.get("overlap_rate", 1.0) < 0.9:  # Less than 90% overlap
+                schemas_with_dimension_issues.add(schema)
+                break
     
     return {
         "tables_count": tables_count,
         "schemas_with_column_mismatches": list(schemas_with_column_mismatches),
         "schemas_with_type_mismatches": list(schemas_with_type_mismatches),
         "schemas_with_row_count_diff": list(schemas_with_row_count_diff),
-        "schemas_with_low_match_rate": list(schemas_with_low_match_rate)
+        "schemas_with_low_match_rate": list(schemas_with_low_match_rate),
+        "schemas_with_dimension_issues": list(schemas_with_dimension_issues)
     }
