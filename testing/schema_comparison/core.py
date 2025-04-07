@@ -133,6 +133,7 @@ class SchemaComparisonTool:
                     ["2024-03-01", "2024-03-15"]
                 ],
                 "metrics_to_compare": ["sessions", "pageviews", "unique_pageviews", "clicks", "users"],
+                "dimensions_to_compare": ["device_category", "country", "source_medium", "platform", "channel"],
                 "sample_size": 5
             }
         
@@ -240,17 +241,38 @@ class SchemaComparisonTool:
             self.logger.error(f"Error getting row count for {dataset}.{table}: {e}")
             return 0
     
-    def get_aggregate(self, dataset: str, table: str, column: str, start_date: str, end_date: str) -> float:
-        """Get aggregate value from a table within a date range."""
+    def get_aggregate(self, dataset: str, table: str, column: str, 
+                      start_date: str, end_date: str) -> Dict[str, Any]:
+        """
+        Get aggregate value from a table within a date range, using appropriate aggregation 
+        based on data type.
+        
+        Args:
+            dataset: BigQuery dataset name
+            table: BigQuery table name
+            column: Column to aggregate
+            start_date: Start date for filtering
+            end_date: End date for filtering
+            
+        Returns:
+            Dictionary with aggregation results
+        """
         try:
-            # First check if 'date' column exists in the table
+            # Get table schema to determine column data type
             schema_df = self.get_table_schema(dataset, table)
             date_column = analysis.find_date_column(schema_df, f"{dataset}.{table}")
+            
+            # Determine column type and appropriate aggregation
+            column_type = analysis.determine_column_type(schema_df, column)
+            agg_function, description = analysis.get_appropriate_aggregation(column_type)
+            
+            self.logger.info(f"  Column '{column}' identified as {column_type} type, using {agg_function} aggregation")
             
             # Build the appropriate query
             query = query_builder.build_aggregate_query(
                 self.project_id, dataset, table, column,
-                date_column, start_date, end_date
+                date_column, start_date, end_date,
+                agg_function
             )
             
             df = self.bq_client.query(query).to_dataframe()
@@ -258,19 +280,121 @@ class SchemaComparisonTool:
             
             # Convert numpy types to Python native types for JSON serialization
             if pd.isna(value):
-                return 0
+                final_value = 0
             elif hasattr(value, 'item'):
-                return value.item()  # Convert numpy types to native Python types
+                final_value = value.item()  # Convert numpy types to native Python types
             else:
-                return float(value)
+                final_value = float(value) if column_type == 'numeric' else int(value)
+            
+            return {
+                "value": final_value, 
+                "type": column_type,
+                "aggregation": agg_function,
+                "description": description
+            }
         except Exception as e:
             self.logger.error(f"Error getting aggregate for {dataset}.{table}.{column}: {e}")
-            return 0
+            return {
+                "value": 0, 
+                "type": "unknown", 
+                "aggregation": "none",
+                "description": "error",
+                "error": str(e)
+            }
+    
+    def get_distribution(self, dataset: str, table: str, column: str, 
+                         start_date: str, end_date: str, 
+                         top_n: int = 10) -> Optional[pd.DataFrame]:
+        """
+        Get value distribution for a categorical column.
+        
+        Args:
+            dataset: BigQuery dataset name
+            table: BigQuery table name
+            column: Column to analyze distribution
+            start_date: Start date for filtering
+            end_date: End date for filtering
+            top_n: Number of top values to return
+            
+        Returns:
+            DataFrame with distribution or None on error
+        """
+        try:
+            # Get table schema to find the date column (if any)
+            schema_df = self.get_table_schema(dataset, table)
+            date_column = analysis.find_date_column(schema_df, f"{dataset}.{table}")
+            
+            # Build the query
+            query = query_builder.build_distribution_query(
+                self.project_id, dataset, table, column,
+                date_column, start_date, end_date,
+                top_n
+            )
+            
+            # Execute the query
+            df = self.bq_client.query(query).to_dataframe()
+            return df
+        except Exception as e:
+            self.logger.error(f"Error getting distribution for {dataset}.{table}.{column}: {e}")
+            return None
+    
+    def get_cardinality(self, dataset: str, table: str, column: str, 
+                        start_date: str, end_date: str) -> Dict[str, Any]:
+        """
+        Get cardinality statistics for a column.
+        
+        Args:
+            dataset: BigQuery dataset name
+            table: BigQuery table name
+            column: Column to check cardinality
+            start_date: Start date for filtering
+            end_date: End date for filtering
+            
+        Returns:
+            Dictionary with cardinality statistics
+        """
+        try:
+            # Get table schema to find the date column (if any)
+            schema_df = self.get_table_schema(dataset, table)
+            date_column = analysis.find_date_column(schema_df, f"{dataset}.{table}")
+            
+            # Build the query
+            query = query_builder.build_cardinality_query(
+                self.project_id, dataset, table, column,
+                date_column, start_date, end_date
+            )
+            
+            # Execute the query
+            df = self.bq_client.query(query).to_dataframe()
+            
+            # Extract results
+            distinct_count = int(df["distinct_count"].iloc[0])
+            total_count = int(df["total_count"].iloc[0])
+            cardinality_ratio = float(df["cardinality_ratio"].iloc[0])
+            
+            return {
+                "distinct_count": distinct_count,
+                "total_count": total_count,
+                "cardinality_ratio": cardinality_ratio
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting cardinality for {dataset}.{table}.{column}: {e}")
+            return {
+                "distinct_count": 0,
+                "total_count": 0,
+                "cardinality_ratio": 0,
+                "error": str(e)
+            }
     
     def get_available_metrics(self, dataset: str, table: str) -> List[str]:
         """Get list of numeric columns that can be used as metrics."""
         schema_df = self.get_table_schema(dataset, table)
         return analysis.get_available_metrics(schema_df)
+    
+    def get_available_dimensions(self, dataset: str, table: str) -> List[str]:
+        """Get list of categorical columns that can be used as dimensions."""
+        schema_df = self.get_table_schema(dataset, table)
+        return analysis.get_available_dimensions(schema_df)
     
     def random_sample_check(self, prod_dataset: str, dev_dataset: str, table: str, 
                            start_date: str, end_date: str, sample_size: int = 5) -> Dict:
@@ -370,6 +494,75 @@ class SchemaComparisonTool:
             self.logger.error(f"Error in random sample check for {table}: {e}")
             return {"error": str(e)}
     
+    def compare_dimension(self, prod_schema: str, dev_schema: str, table: str, 
+                         dimension: str, start_date: str, end_date: str) -> Dict[str, Any]:
+        """
+        Compare distribution of a dimension between prod and dev.
+        
+        Args:
+            prod_schema: Production schema name
+            dev_schema: Development schema name
+            table: Table name
+            dimension: Dimension column to compare
+            start_date: Start date for filtering
+            end_date: End date for filtering
+            
+        Returns:
+            Dictionary with comparison results
+        """
+        try:
+            self.logger.info(f"  Comparing dimension distribution: {dimension}")
+            
+            # Get distributions
+            prod_dist = self.get_distribution(prod_schema, table, dimension, start_date, end_date)
+            dev_dist = self.get_distribution(dev_schema, table, dimension, start_date, end_date)
+            
+            if prod_dist is None or dev_dist is None:
+                return {
+                    "dimension": dimension,
+                    "error": "Failed to get distribution from one or both environments"
+                }
+            
+            # Compare distributions
+            comparison = analysis.compare_distributions(prod_dist, dev_dist)
+            
+            # Get cardinality stats
+            prod_cardinality = self.get_cardinality(prod_schema, table, dimension, start_date, end_date)
+            dev_cardinality = self.get_cardinality(dev_schema, table, dimension, start_date, end_date)
+            
+            # Combine results
+            result = {
+                "dimension": dimension,
+                "overlap_rate": comparison["overlap_rate"],
+                "prod_cardinality": prod_cardinality.get("distinct_count", 0),
+                "dev_cardinality": dev_cardinality.get("distinct_count", 0),
+                "cardinality_diff_pct": utils.calculate_diff_percentage(
+                    prod_cardinality.get("distinct_count", 0), 
+                    dev_cardinality.get("distinct_count", 0)
+                ),
+                "top_diffs": comparison["percentage_diffs"],
+                "missing_values": {
+                    "in_dev": comparison["missing_in_dev"][:5] if len(comparison["missing_in_dev"]) > 5 else comparison["missing_in_dev"],
+                    "in_prod": comparison["missing_in_prod"][:5] if len(comparison["missing_in_prod"]) > 5 else comparison["missing_in_prod"]
+                }
+            }
+            
+            # Log results
+            self.logger.info(f"    Overlap rate: {result['overlap_rate'] * 100:.1f}%")
+            self.logger.info(f"    Cardinality: PROD={result['prod_cardinality']}, DEV={result['dev_cardinality']}, Diff={result['cardinality_diff_pct']:.1f}%")
+            if result['top_diffs']:
+                self.logger.info(f"    Largest distribution differences:")
+                for diff in result['top_diffs'][:3]:
+                    self.logger.info(f"      '{diff['value']}': PROD={diff['prod_pct']:.1f}%, DEV={diff['dev_pct']:.1f}%, Diff={diff['diff']:.1f}%")
+            
+            return result
+        except Exception as e:
+            self.logger.error(f"Error comparing dimension {dimension}: {e}")
+            return {
+                "dimension": dimension,
+                "error": str(e)
+            }
+    
     def compare_table(self, prod_schema: str, dev_schema: str, table: str, time_windows: List[Tuple[str, str]]) -> Dict:
         """Compare a table between production and development schemas."""
         self.logger.info(f"\n--- Comparing Table: {prod_schema}.{table} vs {dev_schema}.{table} ---")
@@ -414,21 +607,53 @@ class SchemaComparisonTool:
         else:
             self.logger.info("  No data type mismatches.")
         
-        # Get available metrics for this table
-        self.logger.info(f"PHASE 2: Identifying metrics to compare...")
-        metrics = [m for m in self.config.get("metrics_to_compare", []) 
+        # Identify metrics and dimensions to compare
+        self.logger.info(f"PHASE 2: Identifying metrics and dimensions to compare...")
+        
+        # For metrics - first check the metrics_to_compare from config, then discover additional metrics
+        configured_metrics = self.config.get("metrics_to_compare", [])
+        metrics = [m for m in configured_metrics 
                   if self.check_column_exists(prod_schema, table, m) and 
                   self.check_column_exists(dev_schema, table, m)]
         
         if not metrics:
+            self.logger.info(f"No configured metrics found. Discovering numeric metrics...")
             potential_metrics = self.get_available_metrics(prod_schema, table)
             metrics = potential_metrics[:5]  # Take up to 5 metrics
-            self.logger.info(f"No specified metrics found. Using discovered metrics: {metrics}")
-        else:
-            self.logger.info(f"Found {len(metrics)} metrics to compare: {metrics}")
+        
+        # Then check schema to filter metrics to only numeric columns
+        numeric_metrics = []
+        for metric in metrics:
+            column_type = analysis.determine_column_type(prod_table_schema, metric)
+            if column_type == 'numeric':
+                numeric_metrics.append(metric)
+            else:
+                self.logger.info(f"  Skipping non-numeric metric: {metric} (type: {column_type})")
+        
+        self.logger.info(f"Found {len(numeric_metrics)} numeric metrics to compare: {numeric_metrics}")
+        
+        # For dimensions - first check dimensions_to_compare from config, then discover
+        configured_dimensions = self.config.get("dimensions_to_compare", [])
+        if not configured_dimensions and "metrics_to_compare" in self.config:
+            # For backwards compatibility, check if metrics_to_compare contains dimensions
+            configured_dimensions = [m for m in self.config["metrics_to_compare"] 
+                                   if analysis.determine_column_type(prod_table_schema, m) == 'categorical']
+        
+        dimensions = [d for d in configured_dimensions
+                     if self.check_column_exists(prod_schema, table, d) and 
+                     self.check_column_exists(dev_schema, table, d)]
+        
+        if not dimensions:
+            self.logger.info(f"No configured dimensions found. Discovering categorical dimensions...")
+            potential_dimensions = self.get_available_dimensions(prod_schema, table)
+            dimensions = potential_dimensions[:5]  # Take up to 5 dimensions
+        
+        self.logger.info(f"Found {len(dimensions)} dimensions to compare: {dimensions}")
         
         # Row counts and metrics by time window
         window_results = []
+        dimension_comparisons = []
+        
         for start_date, end_date in time_windows:
             self.logger.info(f"\nPHASE 3: Comparing data for time window {start_date} to {end_date}...")
             
@@ -454,27 +679,42 @@ class SchemaComparisonTool:
                 }
                 
                 # Compare metrics
-                self.logger.info(f"  3.2: Comparing {len(metrics)} metrics between environments...")
-                for idx, metric in enumerate(metrics):
+                self.logger.info(f"  3.2: Comparing {len(numeric_metrics)} metrics between environments...")
+                for idx, metric in enumerate(numeric_metrics):
                     try:
-                        self.logger.info(f"  Comparing metric {idx+1}/{len(metrics)}: {metric}...")
-                        prod_value = self.get_aggregate(prod_schema, table, metric, start_date, end_date)
-                        dev_value = self.get_aggregate(dev_schema, table, metric, start_date, end_date)
+                        self.logger.info(f"  Comparing metric {idx+1}/{len(numeric_metrics)}: {metric}...")
+                        prod_result = self.get_aggregate(prod_schema, table, metric, start_date, end_date)
+                        dev_result = self.get_aggregate(dev_schema, table, metric, start_date, end_date)
+                        
+                        prod_value = prod_result["value"]
+                        dev_value = dev_result["value"]
                         
                         metric_diff_pct = utils.calculate_diff_percentage(prod_value, dev_value)
                         
-                        self.logger.info(f"  {metric}: PROD={prod_value}, DEV={dev_value}, Diff={metric_diff_pct:.2f}%")
+                        self.logger.info(f"  {metric} ({prod_result['description']}): PROD={prod_value}, DEV={dev_value}, Diff={metric_diff_pct:.2f}%")
                         
                         window_result["metrics"].append({
                             "name": metric,
-                            "prod_value": float(prod_value) if pd.notna(prod_value) else 0,
-                            "dev_value": float(dev_value) if pd.notna(dev_value) else 0,
+                            "type": prod_result["type"],
+                            "aggregation": prod_result["aggregation"],
+                            "prod_value": prod_value,
+                            "dev_value": dev_value,
                             "diff_pct": round(metric_diff_pct, 2)
                         })
                     except Exception as e:
                         self.logger.error(f"  Error comparing metric {metric}: {e}")
                 
                 window_results.append(window_result)
+                
+                # Compare dimensions (only for the first time window)
+                if start_date == time_windows[0][0] and end_date == time_windows[0][1]:
+                    self.logger.info(f"  3.3: Comparing {len(dimensions)} dimensions between environments...")
+                    for dimension in dimensions:
+                        result = self.compare_dimension(
+                            prod_schema, dev_schema, table, dimension, 
+                            start_date, end_date
+                        )
+                        dimension_comparisons.append(result)
                 
             except Exception as e:
                 self.logger.error(f"Error comparing time window {start_date} to {end_date}: {e}")
@@ -519,6 +759,7 @@ class SchemaComparisonTool:
             "dev_table": f"{dev_schema}.{table}",
             "schema_comparison": schema_results,
             "time_windows": window_results,
+            "dimension_comparisons": dimension_comparisons,
             "sample_check": sample_check_result
         }
     
@@ -589,6 +830,8 @@ class SchemaComparisonTool:
             self.logger.info(f"- Schemas with data type mismatches: {len(summary['schemas_with_type_mismatches'])}")
             self.logger.info(f"- Schemas with significant row count differences: {len(summary['schemas_with_row_count_diff'])}")
             self.logger.info(f"- Schemas with low sample match rates: {len(summary['schemas_with_low_match_rate'])}")
+            if 'schemas_with_dimension_issues' in summary:
+                self.logger.info(f"- Schemas with dimension distribution issues: {len(summary['schemas_with_dimension_issues'])}")
             
         except Exception as e:
             self.logger.error(f"Error saving results: {e}")
